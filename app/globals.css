@@ -1,0 +1,83 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  scroll-behavior: smooth;
+}
+
+/* thin custom scrollbar */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: #ebe9e4;
+}
+::-webkit-scrollbar-thumb {
+  background: #786767;
+  border-radius: 999px;
+}
+.dark ::-webkit-scrollbar-track {
+  background: #282539;
+}
+.dark ::-webkit-scrollbar-thumb {
+  background: #EBE9E4;
+  opacity: 0.3;
+}
+
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    #e4e2db 0%,
+    #f4f3ee 20%,
+    #e4e2db 40%
+  );
+  background-size: 800px 100%;
+}
+.dark .shimmer {
+  background: linear-gradient(
+    90deg,
+    #332f47 0%,
+    #423d5c 20%,
+    #332f47 40%
+  );
+  background-size: 800px 100%;
+}
+
+.text-balance {
+  text-wrap: balance;
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* visible focus ring for keyboard nav, kept even where components override outline */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid #282539;
+  outline-offset: 2px;
+}
+.dark a:focus-visible,
+.dark button:focus-visible,
+.dark input:focus-visible {
+  outline: 2px solid #ebe9e4;
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
