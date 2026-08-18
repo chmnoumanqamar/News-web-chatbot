@@ -1,15 +1,14 @@
 import { NextResponse } from "next/server";
 import { sanitizeQuery } from "@/lib/searchUtils";
-import { parseTimeWindow } from "@/lib/timeParse";
+import { parseTimeWindow, extractTimeSlot } from "@/lib/timeParse";
 import { countryMeta } from "@/lib/countries";
 
 // The chatbot widget and AI Results panel call this route. It:
 //  1. Handles greetings in English / Roman Urdu / Urdu
-//  2. Works out the user's selected country and maps to its primary TV news channels
-//     (e.g., Pakistan: Geo News, ARY News, Dunya News, Hum News, Samaa TV, Express News)
-//  3. Fetches live/recent TV broadcast reports directly from YouTube News Category (25)
-//  4. Fetches grounding articles from top news networks
-//  5. Generates a mature, professional broadcast briefing via Gemini 3.6 Flash
+//  2. Extracts exact requested bulletin times (e.g. "9 PM", "9 baje", "10 PM", "8 AM")
+//  3. Identifies selected country profile (Pakistan, US, UK, India, Global) and their TV channels
+//  4. Searches and ranks YouTube broadcasts strictly for that country and requested time bulletin
+//  5. Prompts Gemini 3.6 Flash to report precisely on that requested hour's broadcast
 
 const NEWS_BASE_URL = "https://newsapi.org/v2/everything";
 const TOP_HEADLINES_URL = "https://newsapi.org/v2/top-headlines";
@@ -77,7 +76,6 @@ const FETCH_TIMEOUT_MS = 9000;
 function resolveTargetProfile(message, countryCode = "pk") {
   const lower = (message || "").toLowerCase();
 
-  // If user explicitly asks about a specific country or Times Square
   if (
     lower.includes("times square") ||
     lower.includes("new york") ||
@@ -109,7 +107,6 @@ function resolveTargetProfile(message, countryCode = "pk") {
     return COUNTRY_PROFILES.in;
   }
 
-  // Fallback to selected dropdown country
   if (COUNTRY_PROFILES[countryCode]) {
     return COUNTRY_PROFILES[countryCode];
   }
@@ -145,8 +142,8 @@ function checkGreeting(message) {
   if (GREETINGS.has(clean) || clean.length <= 2) {
     const isUrdu = /salam|aoa|kaise|kia|kya|hal|haal|ap|aap|tum/.test(clean);
     const answer = isUrdu
-      ? "Walaikum Assalam! Main Pulse News Assistant hoon. Aap mujhse kisi bhi TV channel (Geo, ARY, Hum, Samaa) ya kisi bhi topic ki taza tareen headlines pooch sakte hain. Main accurate aur live updates faraham karunga."
-      : "Hello! I am Pulse News Assistant — your live TV news companion. You can ask me what is currently broadcasting on major news channels (such as Geo News, ARY News, Dunya, Hum News, CNN, BBC) or any specific topic. How can I assist you?";
+      ? "Walaikum Assalam! Main Pulse News Assistant hoon. Aap mujhse kisi bhi waqt ya kisi bhi TV channel (Geo, ARY, Hum, Samaa) ki taza headlines pooch sakte hain, jaise '9 PM news' ya 'aaj ki taza khabar'."
+      : "Hello! I am Pulse News Assistant — your live TV news companion. You can ask me for any bulletin (e.g. 'today 9 PM news') or live coverage from major TV channels (Geo News, ARY News, Hum, Dunya, CNN, BBC). How can I assist you?";
     return { isGreeting: true, answer };
   }
   return { isGreeting: false };
@@ -158,14 +155,17 @@ function makeController(ms) {
   return { controller, timeout };
 }
 
-// ─── Fetch YouTube TV News Broadcasts (Category 25 only) ──────────────────────
+// ─── Fetch YouTube TV News Broadcasts with Exact Time Matching ────────────────
 
-async function fetchBroadcastVideos({ query, profile, from }) {
+async function fetchBroadcastVideos({ query, profile, from, timeSlot }) {
   const apiKey = process.env.YOUTUBE_API_KEY;
   if (!apiKey) return [];
 
   let searchQuery;
-  if (!query) {
+  if (timeSlot) {
+    // Exact time bulletin requested (e.g. 9 PM headlines)
+    searchQuery = `${timeSlot.slot} OR ${timeSlot.slotAlt} (${profile.ytQuery})`;
+  } else if (!query) {
     searchQuery = profile.ytQuery;
   } else {
     searchQuery = `${query} (${profile.ytQuery})`;
@@ -176,7 +176,7 @@ async function fetchBroadcastVideos({ query, profile, from }) {
   params.set("q", searchQuery);
   params.set("type", "video");
   params.set("order", "date");
-  params.set("maxResults", "10");
+  params.set("maxResults", "15");
   params.set("videoCategoryId", "25"); // Category 25 = News & Politics ONLY
   if (from) params.set("publishedAfter", from);
   if (profile.regionCode) params.set("regionCode", profile.regionCode);
@@ -191,19 +191,35 @@ async function fetchBroadcastVideos({ query, profile, from }) {
     });
     clearTimeout(timeout);
 
+    let items = [];
     if (!res.ok) {
-      // Fallback without category ID if rejected
       params.delete("videoCategoryId");
       const res2 = await fetch(`${YOUTUBE_SEARCH_URL}?${params.toString()}`, { cache: "no-store" });
       if (res2.ok) {
         const data2 = await res2.json();
-        return parseYtItems(data2.items);
+        items = parseYtItems(data2.items);
       }
-      return [];
+    } else {
+      const data = await res.json();
+      items = parseYtItems(data.items);
     }
 
-    const data = await res.json();
-    return parseYtItems(data.items);
+    // If a specific timeSlot was requested, prioritize exact matches
+    if (timeSlot && items.length > 0) {
+      const timeRegex = new RegExp(
+        `\\b(?:${timeSlot.hour}\\s*(?:pm|am|baje)|${timeSlot.slotAlt}|${timeSlot.hour}:00)\\b`,
+        "i"
+      );
+      const exactMatches = items.filter((v) => timeRegex.test(v.title));
+      const otherMatches = items.filter((v) => !timeRegex.test(v.title));
+
+      if (exactMatches.length > 0) {
+        // Return exact matches first, followed by others up to 10
+        return [...exactMatches, ...otherMatches].slice(0, 10);
+      }
+    }
+
+    return items.slice(0, 10);
   } catch (err) {
     clearTimeout(timeout);
     console.error("Chatbot: YouTube fetch failed:", err.message || err);
@@ -248,7 +264,6 @@ async function fetchGroundingArticles({ query, profile, from }) {
     clearTimeout(timeout);
 
     if (!res.ok) {
-      // Try global top headlines if domain filter errored
       const res2 = await fetch(`${TOP_HEADLINES_URL}?language=en&pageSize=8`, {
         headers: { "X-Api-Key": apiKey },
         cache: "no-store",
@@ -270,10 +285,10 @@ async function fetchGroundingArticles({ query, profile, from }) {
 
 // ─── Gemini LLM News Briefing ─────────────────────────────────────────────────
 
-async function askGemini({ question, profile, articles, videos }) {
+async function askGemini({ question, profile, articles, videos, timeSlot }) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    return composeFallbackSummary(profile, videos, articles);
+    return composeFallbackSummary(profile, videos, articles, timeSlot);
   }
 
   const broadcastList = videos.length
@@ -284,17 +299,21 @@ async function askGemini({ question, profile, articles, videos }) {
     ? articles.slice(0, 6).map((a, i) => `${i + 1}. [${a.source?.name}] ${a.title}`).join("\n")
     : "";
 
+  const timeGuidance = timeSlot
+    ? `The user specifically asked for the ${timeSlot.slot} news bulletin. Focus strictly on what was reported in the ${timeSlot.slot} broadcast on ${profile.name}'s TV channels (${profile.channels}). Do not report on other hours unless directly part of the ${timeSlot.slot} bulletin.`
+    : `Focus on what is actively being broadcast on leading TV channels in ${profile.name} (${profile.channels}) right now.`;
+
   const prompt = `You are "Pulse Assistant" — a senior TV news correspondent and analyst for Pulse News.
 
 TASK:
-Provide a mature, authoritative, and comprehensive live news briefing in response to the user's question, reflecting what is actively being broadcast on leading TV channels in ${profile.name} (such as ${profile.channels}).
+Provide a mature, authoritative, and accurate news briefing in direct response to the user's question.
 
 CRITICAL GUIDELINES:
 1. LANGUAGE: Detect the language used by the user (English, Urdu, or Roman Urdu). Reply fluently and naturally in that EXACT SAME language.
-2. TV BROADCAST FOCUS: Emphasize current top headlines being covered on TV channels right now (politics, security, economy, breaking stories, or sports).
-3. MATURITY & DEPTH: Write 3 to 5 well-constructed, informative sentences. Be specific, articulate, and clear. Avoid robotic phrases or one-line generic dismissals.
+2. TIME ACCURACY: ${timeGuidance}
+3. MATURITY & DEPTH: Write 3 to 5 well-constructed, informative sentences summarizing the top stories covered in this broadcast. Be specific and articulate.
 4. GROUNDING: Base your briefing on the broadcast reports and live headlines listed below.
-5. FORMAT: Natural, engaging spoken journalistic prose. NO markdown headings, NO bullet points, NO asterisks.
+5. FORMAT: Natural, spoken journalistic prose. NO markdown headings, NO bullet points, NO asterisks.
 
 USER QUESTION: "${question}"
 
@@ -304,7 +323,7 @@ ${broadcastList}
 ADDITIONAL NEWS WIRES:
 ${articleList}
 
-Deliver your comprehensive news briefing:`;
+Deliver your accurate news briefing:`;
 
   for (const model of GEMINI_MODELS) {
     const url = `${GEMINI_BASE_URL}/${model}:generateContent?key=${apiKey}`;
@@ -326,7 +345,7 @@ Deliver your comprehensive news briefing:`;
 
       if (!res.ok) {
         if (res.status === 401) {
-          return composeFallbackSummary(profile, videos, articles);
+          return composeFallbackSummary(profile, videos, articles, timeSlot);
         }
         continue;
       }
@@ -342,20 +361,22 @@ Deliver your comprehensive news briefing:`;
     }
   }
 
-  return composeFallbackSummary(profile, videos, articles);
+  return composeFallbackSummary(profile, videos, articles, timeSlot);
 }
 
 // ─── High-Quality Fallback Synthesis ──────────────────────────────────────────
 
-function composeFallbackSummary(profile, videos, articles) {
+function composeFallbackSummary(profile, videos, articles, timeSlot) {
+  const timeLabel = timeSlot ? `${timeSlot.slot} ` : "";
+
   if (videos.length > 0) {
     const topClips = videos.slice(0, 3).map((v) => `"${v.title}" (${v.channel})`).join(", ");
-    return `Major TV channels in ${profile.name} (${profile.channels}) are currently broadcasting key developing stories including: ${topClips}. You can watch the verified news broadcasts directly below.`;
+    return `Major TV channels in ${profile.name} (${profile.channels}) reported the following key developing stories in their ${timeLabel}news broadcast: ${topClips}. You can watch the verified broadcast reports directly below.`;
   }
 
   if (articles.length > 0) {
     const topArticles = articles.slice(0, 3).map((a) => `"${a.title}"`).join(", ");
-    return `Top developments currently leading headlines across ${profile.name} include ${topArticles}. Please check the latest broadcast reports below.`;
+    return `Top developments leading headlines across ${profile.name} include ${topArticles}. Please check the latest broadcast reports below.`;
   }
 
   return `Live news broadcasts across ${profile.name}'s leading TV networks (${profile.channels}) are actively covering major developing stories in national politics, economy, and regional affairs. Explore the verified broadcast reports below.`;
@@ -392,22 +413,26 @@ export async function POST(request) {
   // 2. Identify target country & TV channel profile
   const profile = resolveTargetProfile(message, country);
 
-  // 3. Time parsing and query sanitization
+  // 3. Extract exact time bulletin if requested (e.g. 9 PM, 9 baje, 10 PM)
+  const timeSlot = extractTimeSlot(message);
+
+  // 4. Time window and query sanitization
   const { from, cleanedMessage } = parseTimeWindow(message);
   const query = sanitizeQuery(cleanedMessage);
 
-  // 4. Fetch verified TV broadcasts and grounding news
+  // 5. Fetch verified TV broadcasts (matching timeSlot if specified) and grounding news
   const [videos, articles] = await Promise.all([
-    fetchBroadcastVideos({ query, profile, from }),
+    fetchBroadcastVideos({ query, profile, from, timeSlot }),
     fetchGroundingArticles({ query, profile, from }),
   ]);
 
-  // 5. Generate mature TV broadcast briefing via Gemini 3.6 Flash
+  // 6. Generate accurate TV broadcast briefing via Gemini 3.6 Flash
   const answer = await askGemini({
     question: message,
     profile,
     articles,
     videos,
+    timeSlot,
   });
 
   return NextResponse.json({
@@ -415,5 +440,6 @@ export async function POST(request) {
     videos,
     query: query || message,
     country: profile.name,
+    timeSlot: timeSlot?.slot || null,
   });
 }
