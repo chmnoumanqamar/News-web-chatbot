@@ -16,25 +16,26 @@ export default function ArticleGrid({
   hasMore,
   onLoadMore,
 }) {
-  // Infinite scroll: once the sentinel div near the bottom enters the
-  // viewport, pull the next page automatically — the "unlimited, like TV"
-  // feed the user asked for, instead of stopping after one batch.
   const sentinelRef = useRef(null);
 
   useEffect(() => {
-    if (!onLoadMore || status === "loading" || status === "error") return;
+    if (!onLoadMore || !hasMore || status === "loading" || status === "loadingMore" || status === "error") {
+      return;
+    }
     const node = sentinelRef.current;
     if (!node) return;
 
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0].isIntersecting) onLoadMore();
+        if (entries[0].isIntersecting && hasMore && status !== "loadingMore") {
+          onLoadMore();
+        }
       },
-      { rootMargin: "600px" }
+      { rootMargin: "400px" }
     );
     observer.observe(node);
     return () => observer.disconnect();
-  }, [onLoadMore, status, articles.length]);
+  }, [onLoadMore, status, hasMore, articles.length]);
 
   if (status === "loading") {
     return (
@@ -84,31 +85,29 @@ export default function ArticleGrid({
   return (
     <>
       <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-        <AnimatePresence mode="popLayout">
+        <ArticleCard
+          key={first.url || first.id}
+          article={first}
+          index={0}
+          featured
+          onOpen={onOpen}
+          isBookmarked={isBookmarked(first.id)}
+          onToggleBookmark={onToggleBookmark}
+        />
+        {rest.map((article, i) => (
           <ArticleCard
-            key={first.id}
-            article={first}
-            index={0}
-            featured
+            key={article.url || article.id}
+            article={article}
+            index={i + 1}
             onOpen={onOpen}
-            isBookmarked={isBookmarked(first.id)}
+            isBookmarked={isBookmarked(article.id)}
             onToggleBookmark={onToggleBookmark}
           />
-          {rest.map((article, i) => (
-            <ArticleCard
-              key={article.id}
-              article={article}
-              index={i + 1}
-              onOpen={onOpen}
-              isBookmarked={isBookmarked(article.id)}
-              onToggleBookmark={onToggleBookmark}
-            />
-          ))}
-        </AnimatePresence>
+        ))}
       </div>
 
       {/* Invisible trigger for infinite scroll, sitting just above the very bottom */}
-      <div ref={sentinelRef} className="h-px w-full" aria-hidden />
+      {hasMore && <div ref={sentinelRef} className="h-4 w-full my-2" aria-hidden />}
 
       {status === "loadingMore" && (
         <div className="flex justify-center py-8">
