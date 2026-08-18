@@ -91,7 +91,7 @@ export default function HomePage() {
         }}
       />
 
-      <ChatWidget onResult={setAiResult} />
+      <ChatWidget country={country} onResult={setAiResult} />
     </div>
   );
 }

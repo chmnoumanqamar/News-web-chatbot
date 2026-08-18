@@ -1,20 +1,20 @@
 import { NextResponse } from "next/server";
 import { sanitizeQuery } from "@/lib/searchUtils";
 import { parseTimeWindow } from "@/lib/timeParse";
+import { countryMeta } from "@/lib/countries";
 
-// The chatbot widget calls this route with the user's question. It:
+// The chatbot widget and AI Results panel call this route. It:
 //  1. Handles greetings in English / Roman Urdu / Urdu
-//  2. Works out time window and strips noise / date stamps
-//  3. Identifies query context: Pakistan (national, politics, city) vs Global (Times Square, US, world)
-//  4. Pulls matching articles from NewsAPI (up to 10)
-//  5. Pulls verified news broadcast videos from YouTube (News category 25 only)
-//  6. Generates a mature, comprehensive news brief via Gemini 3.6 Flash with full fallback
+//  2. Works out the user's selected country and maps to its primary TV news channels
+//     (e.g., Pakistan: Geo News, ARY News, Dunya News, Hum News, Samaa TV, Express News)
+//  3. Fetches live/recent TV broadcast reports directly from YouTube News Category (25)
+//  4. Fetches grounding articles from top news networks
+//  5. Generates a mature, professional broadcast briefing via Gemini 3.6 Flash
 
 const NEWS_BASE_URL = "https://newsapi.org/v2/everything";
 const TOP_HEADLINES_URL = "https://newsapi.org/v2/top-headlines";
 const YOUTUBE_SEARCH_URL = "https://www.googleapis.com/youtube/v3/search";
 
-// Verified working Gemini models in order of priority
 const GEMINI_MODELS = [
   "gemini-3.6-flash",
   "gemini-3.7-flash",
@@ -25,46 +25,108 @@ const GEMINI_MODELS = [
 ];
 const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models";
 
-// Pakistan-specific verified news sources
-const PK_DOMAINS =
-  "dawn.com,tribune.com.pk,thenews.com.pk,geo.tv,arynews.tv,brecorder.com,nation.com.pk,dailytimes.com.pk,samaa.tv,dunyanews.tv";
-const PK_GENERAL_KEYWORD =
-  "Pakistan OR Islamabad OR Karachi OR Lahore OR Peshawar OR Quetta OR Sindh OR Punjab OR Shehbaz OR Imran OR Economy";
+// ─── Country TV News Channel Profiles ─────────────────────────────────────────
 
-// Top global international news sources
-const GLOBAL_DOMAINS =
-  "bbc.com,reuters.com,apnews.com,cnn.com,theguardian.com,nytimes.com,washingtonpost.com,bloomberg.com,aljazeera.com,nbcnews.com,foxnews.com,abcnews.go.com,cbsnews.com,usatoday.com,time.com";
+const COUNTRY_PROFILES = {
+  pk: {
+    name: "Pakistan",
+    channels: "Geo News, ARY News, Dunya News, Hum News, Samaa TV, Express News, Dawn News TV",
+    ytQuery: "Geo News OR ARY News OR Dunya News OR Hum News OR Samaa headlines",
+    regionCode: "PK",
+    domains: "dawn.com,tribune.com.pk,thenews.com.pk,geo.tv,arynews.tv,brecorder.com,samaa.tv,dunyanews.tv",
+    newsKeyword: "Pakistan OR Islamabad OR Karachi OR Lahore OR Peshawar OR Quetta OR Shehbaz OR Imran Khan",
+  },
+  us: {
+    name: "United States",
+    channels: "CNN, Fox News, ABC News, NBC News, CBS News, MSNBC, PBS NewsHour",
+    ytQuery: "CNN OR Fox News OR ABC News OR NBC News OR CBS News live headlines",
+    regionCode: "US",
+    domains: "cnn.com,foxnews.com,abcnews.go.com,cbsnews.com,nbcnews.com,nytimes.com,washingtonpost.com",
+    newsKeyword: "United States OR White House OR Congress OR Biden OR Trump OR Economy",
+  },
+  gb: {
+    name: "United Kingdom",
+    channels: "BBC News, Sky News, ITV News, Channel 4 News",
+    ytQuery: "BBC News OR Sky News OR ITV News live headlines",
+    regionCode: "GB",
+    domains: "bbc.com,theguardian.com,telegraph.co.uk,independent.co.uk,reuters.com",
+    newsKeyword: "UK OR Britain OR London OR Parliament OR Prime Minister",
+  },
+  in: {
+    name: "India",
+    channels: "NDTV, India Today, Republic World, Times Now, WION, DD News",
+    ytQuery: "NDTV OR India Today OR Republic World OR Times Now live headlines",
+    regionCode: "IN",
+    domains: "ndtv.com,indiatoday.in,thehindu.com,indianexpress.com",
+    newsKeyword: "India OR Delhi OR Mumbai OR Parliament OR Modi",
+  },
+  global: {
+    name: "Global",
+    channels: "BBC News, CNN, Al Jazeera English, Reuters, Sky News, DW News, France 24",
+    ytQuery: "BBC News OR CNN OR Al Jazeera OR Reuters OR DW News live headlines",
+    regionCode: "US",
+    domains: "bbc.com,reuters.com,apnews.com,cnn.com,theguardian.com,aljazeera.com",
+    newsKeyword: "World news OR breaking news OR international",
+  },
+};
 
-const FETCH_TIMEOUT_MS = 10000;
+const FETCH_TIMEOUT_MS = 9000;
 
-// ─── Query Classification ─────────────────────────────────────────────────────
+// ─── Query Scope & Country Detection ──────────────────────────────────────────
 
-function isPakistanContext(msg) {
-  const lower = msg.toLowerCase();
-  const pkTerms = [
-    "pakistan", "islamabad", "karachi", "lahore", "peshawar", "quetta",
-    "sindh", "punjab", "balochistan", "kpk", "pti", "pmln", "ppp",
-    "imran", "shehbaz", "nawaz", "bilawal", "rupee", "pkr", "geo",
-    "ary", "dawn", "samaa", "dunya", "hum", "parliament", "army",
-    "fbr", "sbp", "monsoon", "cricket", "babar", "afridi",
-    "کراچی", "اسلام آباد", "لاہور", "پاکستان",
-  ];
-  return pkTerms.some((t) => lower.includes(t));
-}
+function resolveTargetProfile(message, countryCode = "pk") {
+  const lower = (message || "").toLowerCase();
 
-function isGlobalContext(msg) {
-  const lower = msg.toLowerCase();
-  const globalTerms = [
-    "times square", "new york", "nyc", "usa", "united states", "america",
-    "washington", "white house", "trump", "biden", "harris", "congress",
-    "wall street", "nasdaq", "dow jones", "london", "uk ", "england",
-    "paris", "france", "germany", "beijing", "china", "russia", "moscow",
-    "ukraine", "israel", "gaza", "middle east", "iran", "saudi", "europe",
-    "nato", "united nations", "world cup", "olympics", "spacex", "tesla",
-    "apple", "google", "microsoft", "bitcoin", "crypto", "international",
-    "world news", "global",
-  ];
-  return globalTerms.some((t) => lower.includes(t));
+  // If user explicitly asks about a specific country or Times Square
+  if (
+    lower.includes("times square") ||
+    lower.includes("new york") ||
+    lower.includes("usa") ||
+    lower.includes("america") ||
+    lower.includes("white house") ||
+    lower.includes("trump") ||
+    lower.includes("biden")
+  ) {
+    return COUNTRY_PROFILES.us;
+  }
+  if (
+    lower.includes("pakistan") ||
+    lower.includes("karachi") ||
+    lower.includes("lahore") ||
+    lower.includes("islamabad") ||
+    lower.includes("imran") ||
+    lower.includes("geo news") ||
+    lower.includes("ary news") ||
+    lower.includes("hum news") ||
+    lower.includes("samaa")
+  ) {
+    return COUNTRY_PROFILES.pk;
+  }
+  if (lower.includes("london") || lower.includes("uk") || lower.includes("britain") || lower.includes("bbc")) {
+    return COUNTRY_PROFILES.gb;
+  }
+  if (lower.includes("india") || lower.includes("delhi") || lower.includes("mumbai") || lower.includes("modi")) {
+    return COUNTRY_PROFILES.in;
+  }
+
+  // Fallback to selected dropdown country
+  if (COUNTRY_PROFILES[countryCode]) {
+    return COUNTRY_PROFILES[countryCode];
+  }
+
+  const meta = countryMeta(countryCode);
+  if (meta) {
+    return {
+      name: meta.name,
+      channels: `${meta.name} National TV & International News`,
+      ytQuery: `${meta.name} news broadcast live headlines`,
+      regionCode: countryCode.toUpperCase(),
+      domains: "bbc.com,reuters.com,apnews.com,cnn.com",
+      newsKeyword: `${meta.name} OR ${meta.demonym || meta.name}`,
+    };
+  }
+
+  return COUNTRY_PROFILES.pk;
 }
 
 // ─── Greetings ────────────────────────────────────────────────────────────────
@@ -83,8 +145,8 @@ function checkGreeting(message) {
   if (GREETINGS.has(clean) || clean.length <= 2) {
     const isUrdu = /salam|aoa|kaise|kia|kya|hal|haal|ap|aap|tum/.test(clean);
     const answer = isUrdu
-      ? "Walaikum Assalam! Main Pulse Assistant hoon — aapka comprehensive news companion. Aap mujhse Pakistan, Times Square, world politics, sports, business, technology ya kisi bhi topic ki taza tareen khabrain pooch sakte hain. Main detailed aur accurate updates faraham karunga."
-      : "Hello! I am Pulse Assistant — your comprehensive news intelligence companion. You can ask me about top stories in Pakistan, breaking global events, Times Square updates, politics, economy, technology, or sports. How can I assist you with today's news?";
+      ? "Walaikum Assalam! Main Pulse News Assistant hoon. Aap mujhse kisi bhi TV channel (Geo, ARY, Hum, Samaa) ya kisi bhi topic ki taza tareen headlines pooch sakte hain. Main accurate aur live updates faraham karunga."
+      : "Hello! I am Pulse News Assistant — your live TV news companion. You can ask me what is currently broadcasting on major news channels (such as Geo News, ARY News, Dunya, Hum News, CNN, BBC) or any specific topic. How can I assist you?";
     return { isGreeting: true, answer };
   }
   return { isGreeting: false };
@@ -96,155 +158,17 @@ function makeController(ms) {
   return { controller, timeout };
 }
 
-function normaliseArticles(raw) {
-  return (raw || [])
-    .filter((a) => a.title && a.title !== "[Removed]" && !a.title.includes("Removed"))
-    .map((a, i) => ({
-      id: `${a.url || i}-${i}`,
-      title: a.title,
-      description: a.description || "",
-      url: a.url,
-      image: a.urlToImage,
-      source: a.source?.name || "News Outlet",
-      publishedAt: a.publishedAt,
-    }));
-}
+// ─── Fetch YouTube TV News Broadcasts (Category 25 only) ──────────────────────
 
-// ─── News API Fetchers ────────────────────────────────────────────────────────
-
-async function fetchTopHeadlines(isGlobal) {
-  const apiKey = process.env.NEWS_API_KEY;
-  if (!apiKey) return [];
-
-  let url;
-  if (isGlobal) {
-    const params = new URLSearchParams();
-    params.set("language", "en");
-    params.set("pageSize", "10");
-    url = `${TOP_HEADLINES_URL}?${params.toString()}`;
-  } else {
-    const params = new URLSearchParams();
-    params.set("domains", PK_DOMAINS);
-    params.set("q", PK_GENERAL_KEYWORD);
-    params.set("language", "en");
-    params.set("sortBy", "publishedAt");
-    params.set("pageSize", "10");
-    url = `${NEWS_BASE_URL}?${params.toString()}`;
-  }
-
-  const { controller, timeout } = makeController(FETCH_TIMEOUT_MS);
-  try {
-    const res = await fetch(url, {
-      headers: { "X-Api-Key": apiKey },
-      cache: "no-store",
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    if (!res.ok) {
-      // Fallback to broad headlines if domains filter failed
-      const fallbackUrl = `${TOP_HEADLINES_URL}?language=en&pageSize=10`;
-      const res2 = await fetch(fallbackUrl, {
-        headers: { "X-Api-Key": apiKey },
-        cache: "no-store",
-      });
-      if (res2.ok) {
-        const data2 = await res2.json();
-        return normaliseArticles(data2.articles);
-      }
-      return [];
-    }
-    const data = await res.json();
-    const articles = normaliseArticles(data.articles);
-    if (articles.length === 0 && !isGlobal) {
-      return fetchTopHeadlines(true);
-    }
-    return articles;
-  } catch (err) {
-    clearTimeout(timeout);
-    console.error("Chatbot: NewsAPI top-headlines error:", err.message || err);
-    return [];
-  }
-}
-
-async function fetchArticles({ query, from, isGlobal }) {
-  const apiKey = process.env.NEWS_API_KEY;
-  if (!apiKey) return [];
-  if (!query) return fetchTopHeadlines(isGlobal);
-
-  const params = new URLSearchParams();
-  params.set("q", query);
-  if (from) params.set("from", from);
-  params.set("language", "en");
-  params.set("sortBy", "publishedAt");
-  params.set("pageSize", "10");
-
-  if (isGlobal) {
-    params.set("domains", GLOBAL_DOMAINS);
-  } else if (isPakistanContext(query)) {
-    params.set("domains", PK_DOMAINS);
-  }
-
-  const { controller, timeout } = makeController(FETCH_TIMEOUT_MS);
-  try {
-    const res = await fetch(`${NEWS_BASE_URL}?${params.toString()}`, {
-      headers: { "X-Api-Key": apiKey },
-      cache: "no-store",
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    if (!res.ok) {
-      if (params.has("domains")) {
-        params.delete("domains");
-        const res2 = await fetch(`${NEWS_BASE_URL}?${params.toString()}`, {
-          headers: { "X-Api-Key": apiKey },
-          cache: "no-store",
-        });
-        if (res2.ok) {
-          const data2 = await res2.json();
-          return normaliseArticles(data2.articles);
-        }
-      }
-      return fetchTopHeadlines(isGlobal);
-    }
-    const data = await res.json();
-    let results = normaliseArticles(data.articles);
-    if (results.length === 0) {
-      // Retry without domain constraint
-      if (params.has("domains")) {
-        params.delete("domains");
-        const res2 = await fetch(`${NEWS_BASE_URL}?${params.toString()}`, {
-          headers: { "X-Api-Key": apiKey },
-          cache: "no-store",
-        });
-        if (res2.ok) {
-          const data2 = await res2.json();
-          results = normaliseArticles(data2.articles);
-        }
-      }
-    }
-    return results.length > 0 ? results : fetchTopHeadlines(isGlobal);
-  } catch (err) {
-    clearTimeout(timeout);
-    console.error("Chatbot: NewsAPI fetch error:", err.message || err);
-    return fetchTopHeadlines(isGlobal);
-  }
-}
-
-// ─── YouTube Video Fetcher (Restricted to News & Politics Category 25) ────────
-
-async function fetchVideos({ query, from, isGlobal }) {
+async function fetchBroadcastVideos({ query, profile, from }) {
   const apiKey = process.env.YOUTUBE_API_KEY;
   if (!apiKey) return [];
 
   let searchQuery;
   if (!query) {
-    searchQuery = isGlobal
-      ? "World news breaking headlines today live"
-      : "Pakistan latest news headlines Geo ARY Dunya Hum";
-  } else if (isGlobal) {
-    searchQuery = `${query} news broadcast live`;
+    searchQuery = profile.ytQuery;
   } else {
-    searchQuery = `${query} Pakistan news headlines`;
+    searchQuery = `${query} (${profile.ytQuery})`;
   }
 
   const params = new URLSearchParams();
@@ -255,7 +179,7 @@ async function fetchVideos({ query, from, isGlobal }) {
   params.set("maxResults", "10");
   params.set("videoCategoryId", "25"); // Category 25 = News & Politics ONLY
   if (from) params.set("publishedAfter", from);
-  if (!isGlobal) params.set("regionCode", "PK");
+  if (profile.regionCode) params.set("regionCode", profile.regionCode);
   params.set("relevanceLanguage", "en");
   params.set("key", apiKey);
 
@@ -266,40 +190,20 @@ async function fetchVideos({ query, from, isGlobal }) {
       signal: controller.signal,
     });
     clearTimeout(timeout);
+
     if (!res.ok) {
-      // If videoCategoryId is rejected, retry without it but keep news keyword
+      // Fallback without category ID if rejected
       params.delete("videoCategoryId");
-      const res2 = await fetch(`${YOUTUBE_SEARCH_URL}?${params.toString()}`, {
-        cache: "no-store",
-      });
+      const res2 = await fetch(`${YOUTUBE_SEARCH_URL}?${params.toString()}`, { cache: "no-store" });
       if (res2.ok) {
         const data2 = await res2.json();
-        return (data2.items || [])
-          .filter((v) => v.id?.videoId)
-          .map((v) => ({
-            id: v.id.videoId,
-            title: v.snippet?.title,
-            channel: v.snippet?.channelTitle,
-            thumbnail:
-              v.snippet?.thumbnails?.medium?.url || v.snippet?.thumbnails?.default?.url,
-            publishedAt: v.snippet?.publishedAt,
-            url: `https://www.youtube.com/watch?v=${v.id.videoId}`,
-          }));
+        return parseYtItems(data2.items);
       }
       return [];
     }
+
     const data = await res.json();
-    return (data.items || [])
-      .filter((v) => v.id?.videoId)
-      .map((v) => ({
-        id: v.id.videoId,
-        title: v.snippet?.title,
-        channel: v.snippet?.channelTitle,
-        thumbnail:
-          v.snippet?.thumbnails?.medium?.url || v.snippet?.thumbnails?.default?.url,
-        publishedAt: v.snippet?.publishedAt,
-        url: `https://www.youtube.com/watch?v=${v.id.videoId}`,
-      }));
+    return parseYtItems(data.items);
   } catch (err) {
     clearTimeout(timeout);
     console.error("Chatbot: YouTube fetch failed:", err.message || err);
@@ -307,59 +211,100 @@ async function fetchVideos({ query, from, isGlobal }) {
   }
 }
 
-// ─── Gemini LLM Generator ─────────────────────────────────────────────────────
+function parseYtItems(items) {
+  return (items || [])
+    .filter((v) => v.id?.videoId && v.snippet?.title)
+    .map((v) => ({
+      id: v.id.videoId,
+      title: v.snippet.title.replace(/&amp;/g, "&").replace(/&#39;/g, "'").replace(/&quot;/g, '"'),
+      channel: v.snippet.channelTitle,
+      thumbnail: v.snippet.thumbnails?.medium?.url || v.snippet.thumbnails?.default?.url,
+      publishedAt: v.snippet.publishedAt,
+      url: `https://www.youtube.com/watch?v=${v.id.videoId}`,
+    }));
+}
 
-async function askGemini({ question, articles, videos, isGlobal }) {
+// ─── Fetch Articles for Grounding ─────────────────────────────────────────────
+
+async function fetchGroundingArticles({ query, profile, from }) {
+  const apiKey = process.env.NEWS_API_KEY;
+  if (!apiKey) return [];
+
+  const params = new URLSearchParams();
+  params.set("q", query || profile.newsKeyword);
+  if (profile.domains) params.set("domains", profile.domains);
+  if (from) params.set("from", from);
+  params.set("language", "en");
+  params.set("sortBy", "publishedAt");
+  params.set("pageSize", "8");
+
+  const { controller, timeout } = makeController(FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${NEWS_BASE_URL}?${params.toString()}`, {
+      headers: { "X-Api-Key": apiKey },
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    if (!res.ok) {
+      // Try global top headlines if domain filter errored
+      const res2 = await fetch(`${TOP_HEADLINES_URL}?language=en&pageSize=8`, {
+        headers: { "X-Api-Key": apiKey },
+        cache: "no-store",
+      });
+      if (res2.ok) {
+        const data2 = await res2.json();
+        return (data2.articles || []).filter((a) => a.title && !a.title.includes("[Removed]"));
+      }
+      return [];
+    }
+
+    const data = await res.json();
+    return (data.articles || []).filter((a) => a.title && !a.title.includes("[Removed]"));
+  } catch (err) {
+    clearTimeout(timeout);
+    return [];
+  }
+}
+
+// ─── Gemini LLM News Briefing ─────────────────────────────────────────────────
+
+async function askGemini({ question, profile, articles, videos }) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    return composeFallbackSummary(question, articles, videos);
+    return composeFallbackSummary(profile, videos, articles);
   }
 
-  const articleListing = articles.length
-    ? articles
-        .slice(0, 8)
-        .map(
-          (a, i) =>
-            `${i + 1}. [${a.source}] ${a.title}${a.description ? ` — ${a.description}` : ""}`
-        )
-        .join("\n")
-    : "(No direct live article feeds found)";
+  const broadcastList = videos.length
+    ? videos.slice(0, 6).map((v, i) => `${i + 1}. [${v.channel}] ${v.title}`).join("\n")
+    : "(No direct live broadcast clips returned)";
 
-  const videoListing = videos.length
-    ? videos
-        .slice(0, 6)
-        .map((v, i) => `${i + 1}. [${v.channel}] ${v.title}`)
-        .join("\n")
-    : "(No broadcast videos found)";
+  const articleList = articles.length
+    ? articles.slice(0, 6).map((a, i) => `${i + 1}. [${a.source?.name}] ${a.title}`).join("\n")
+    : "";
 
-  const contextGuide = isGlobal
-    ? "The user is inquiring about global or international news (such as Times Square, US politics, global economy, or international developments). Deliver a mature, worldwide journalistic perspective."
-    : "The user is inquiring from or about Pakistan and regional current affairs. Deliver a mature, comprehensive journalistic summary highlighting political, economic, security, or social developments.";
-
-  const prompt = `You are "Pulse Assistant" — a sophisticated, mature, and highly articulate senior news analyst and journalist for the Pulse News platform.
+  const prompt = `You are "Pulse Assistant" — a senior TV news correspondent and analyst for Pulse News.
 
 TASK:
-Provide a mature, insightful, and comprehensive news briefing in direct response to the user's question.
+Provide a mature, authoritative, and comprehensive live news briefing in response to the user's question, reflecting what is actively being broadcast on leading TV channels in ${profile.name} (such as ${profile.channels}).
 
-CRITICAL INSTRUCTIONS:
+CRITICAL GUIDELINES:
 1. LANGUAGE: Detect the language used by the user (English, Urdu, or Roman Urdu). Reply fluently and naturally in that EXACT SAME language.
-2. TONE & QUALITY: Write with journalistic depth, maturity, and poise. Avoid brief one-liners or generic placeholders. Deliver a solid 3 to 5 sentence summary explaining what is happening, key stakeholders involved, and why it matters.
-3. RELEVANCE: Directly address the user's question (e.g. Times Square, today's headlines, elections, economy, sports).
-4. GROUNDING: Use the provided live articles and broadcasts as your factual grounding. If articles are limited, draw upon your comprehensive world knowledge to provide accurate, up-to-date context without inventing false claims.
-5. FORMAT: Use clear, natural prose. Do NOT use markdown headers or bullet points.
-
-CONTEXT:
-${contextGuide}
+2. TV BROADCAST FOCUS: Emphasize current top headlines being covered on TV channels right now (politics, security, economy, breaking stories, or sports).
+3. MATURITY & DEPTH: Write 3 to 5 well-constructed, informative sentences. Be specific, articulate, and clear. Avoid robotic phrases or one-line generic dismissals.
+4. GROUNDING: Base your briefing on the broadcast reports and live headlines listed below.
+5. FORMAT: Natural, engaging spoken journalistic prose. NO markdown headings, NO bullet points, NO asterisks.
 
 USER QUESTION: "${question}"
 
-LIVE ARTICLES:
-${articleListing}
+LIVE TV BROADCAST REPORTS (${profile.name}):
+${broadcastList}
 
-BROADCAST NEWS VIDEOS:
-${videoListing}
+ADDITIONAL NEWS WIRES:
+${articleList}
 
-Write your complete, mature news response now:`;
+Deliver your comprehensive news briefing:`;
 
   for (const model of GEMINI_MODELS) {
     const url = `${GEMINI_BASE_URL}/${model}:generateContent?key=${apiKey}`;
@@ -380,45 +325,43 @@ Write your complete, mature news response now:`;
       clearTimeout(timeout);
 
       if (!res.ok) {
-        const errText = await res.text();
-        console.error(`Chatbot: Gemini model [${model}] status ${res.status}:`, errText.slice(0, 150));
         if (res.status === 401) {
-          return composeFallbackSummary(question, articles, videos);
+          return composeFallbackSummary(profile, videos, articles);
         }
         continue;
       }
 
       const data = await res.json();
-      const text =
-        data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join("") || "";
+      const text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join("") || "";
       if (text.trim()) {
         return text.trim();
       }
     } catch (err) {
       clearTimeout(timeout);
-      console.error(`Chatbot: Gemini model [${model}] error:`, err.message || err);
       continue;
     }
   }
 
-  // If Gemini calls failed, use our high-quality synthesis fallback
-  return composeFallbackSummary(question, articles, videos);
+  return composeFallbackSummary(profile, videos, articles);
 }
 
 // ─── High-Quality Fallback Synthesis ──────────────────────────────────────────
 
-function composeFallbackSummary(question, articles, videos) {
-  if (articles.length === 0 && videos.length === 0) {
-    return "Here is the latest news update: Key regional and international developments are currently unfolding across politics, business, and current affairs. You can explore the live news categories in the main feed or search for specific keywords.";
+function composeFallbackSummary(profile, videos, articles) {
+  if (videos.length > 0) {
+    const topClips = videos.slice(0, 3).map((v) => `"${v.title}" (${v.channel})`).join(", ");
+    return `Major TV channels in ${profile.name} (${profile.channels}) are currently broadcasting key developing stories including: ${topClips}. You can watch the verified news broadcasts directly below.`;
   }
 
-  const topItems = articles.slice(0, 3);
-  const titles = topItems.map((a) => `"${a.title}" (${a.source})`).join(", and ");
+  if (articles.length > 0) {
+    const topArticles = articles.slice(0, 3).map((a) => `"${a.title}"`).join(", ");
+    return `Top developments currently leading headlines across ${profile.name} include ${topArticles}. Please check the latest broadcast reports below.`;
+  }
 
-  return `Today's top developing stories include ${titles}. For in-depth coverage, explore the full articles and verified broadcast video reports attached below.`;
+  return `Live news broadcasts across ${profile.name}'s leading TV networks (${profile.channels}) are actively covering major developing stories in national politics, economy, and regional affairs. Explore the verified broadcast reports below.`;
 }
 
-// ─── Main POST Route Handler ──────────────────────────────────────────────────
+// ─── POST Handler ─────────────────────────────────────────────────────────────
 
 export async function POST(request) {
   let body;
@@ -429,49 +372,48 @@ export async function POST(request) {
   }
 
   const message = (body?.message || "").trim();
+  const country = (body?.country || "pk").toLowerCase();
+
   if (!message) {
     return NextResponse.json({ error: "Message is required." }, { status: 400 });
   }
 
-  // 1. Instant greeting check
+  // 1. Instant greeting response
   const greetingResult = checkGreeting(message);
   if (greetingResult.isGreeting) {
     return NextResponse.json({
       answer: greetingResult.answer,
-      articles: [],
       videos: [],
       query: message,
       isGreeting: true,
     });
   }
 
-  // 2. Classify scope (Pakistan vs Global)
-  const isGlobal = isGlobalContext(message) && !isPakistanContext(message);
+  // 2. Identify target country & TV channel profile
+  const profile = resolveTargetProfile(message, country);
 
-  // 3. Time parse & query sanitization
+  // 3. Time parsing and query sanitization
   const { from, cleanedMessage } = parseTimeWindow(message);
   const query = sanitizeQuery(cleanedMessage);
 
-  // 4. Parallel fetch for articles and broadcast videos
-  const [articles, videos] = await Promise.all([
-    fetchArticles({ query, from, isGlobal }),
-    fetchVideos({ query, from, isGlobal }),
+  // 4. Fetch verified TV broadcasts and grounding news
+  const [videos, articles] = await Promise.all([
+    fetchBroadcastVideos({ query, profile, from }),
+    fetchGroundingArticles({ query, profile, from }),
   ]);
 
-  // 5. Generate mature journalistic response
+  // 5. Generate mature TV broadcast briefing via Gemini 3.6 Flash
   const answer = await askGemini({
     question: message,
+    profile,
     articles,
     videos,
-    isGlobal,
   });
 
   return NextResponse.json({
     answer,
-    articles,
     videos,
     query: query || message,
-    from,
-    isGlobal,
+    country: profile.name,
   });
 }

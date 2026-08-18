@@ -8,13 +8,13 @@ import { proxiedImage } from "@/lib/imageProxy";
 // `onResult` lets the parent page mirror the latest answer's articles +
 // videos into the main display, per the "sath display main b show karo"
 // requirement — this component only owns the chat bubble UI itself.
-export default function ChatWidget({ onResult }) {
+export default function ChatWidget({ country = "pk", onResult }) {
   const [isOpen, setIsOpen] = useState(false);
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState([
     {
       role: "bot",
-      text: "Hello! Ask me for news anytime — for example \"today's cricket news\" or \"last 2 hours tech updates\". You can also ask in your own language.",
+      text: "Hello! Ask me for any live news — for example \"today's headlines\", \"top TV news\", or \"cricket updates\". You can also ask in Roman Urdu or Urdu.",
     },
   ]);
   const [isLoading, setIsLoading] = useState(false);
@@ -49,7 +49,7 @@ export default function ChatWidget({ onResult }) {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text }),
+        body: JSON.stringify({ message: text, country }),
       });
       const data = await res.json();
 
@@ -66,7 +66,6 @@ export default function ChatWidget({ onResult }) {
         {
           role: "bot",
           text: data.answer,
-          articles: data.articles || [],
           videos: data.videos || [],
         },
       ]);
@@ -74,7 +73,6 @@ export default function ChatWidget({ onResult }) {
       onResult?.({
         query: text,
         answer: data.answer,
-        articles: data.articles || [],
         videos: data.videos || [],
       });
     } catch (err) {
@@ -112,7 +110,7 @@ export default function ChatWidget({ onResult }) {
               <MessageCircle size={18} className="text-sea" />
               <div>
                 <p className="font-display italic text-lg leading-none">Pulse Assistant</p>
-                <p className="text-[11px] text-oatmeal/60">Powered by Gemini 3.6</p>
+                <p className="text-[11px] text-oatmeal/60">Live TV News Intelligence</p>
               </div>
             </div>
 
@@ -128,66 +126,48 @@ export default function ChatWidget({ onResult }) {
                   >
                     <p>{m.text}</p>
 
-                    {m.articles?.length > 0 && (
-                      <div className="flex gap-2 overflow-x-auto no-scrollbar mt-2 -mx-1 px-1">
-                        {m.articles.slice(0, 10).map((a) => (
-                          <a
-                            key={a.id}
-                            href={a.url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="shrink-0 w-24"
-                          >
-                            <div className="w-24 h-16 rounded-lg overflow-hidden bg-umber/10 dark:bg-white/5">
-                              {a.image && (
-                                // eslint-disable-next-line @next/next/no-img-element
-                                <img
-                                  src={proxiedImage(a.image)}
-                                  alt=""
-                                  className="w-full h-full object-cover"
-                                  onError={(e) => (e.currentTarget.style.display = "none")}
-                                />
-                              )}
-                            </div>
-                            <p className="text-[10px] text-umber dark:text-oatmeal/50 leading-tight mt-1 line-clamp-2">
-                              {a.title}
-                            </p>
-                          </a>
-                        ))}
-                      </div>
-                    )}
-
                     {m.videos?.length > 0 && (
-                      <div className="flex gap-2 overflow-x-auto no-scrollbar mt-2 -mx-1 px-1">
-                        {m.videos.slice(0, 10).map((v) => (
-                          <a
-                            key={v.id}
-                            href={v.url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="shrink-0 w-28"
-                          >
-                            <div className="w-28 h-16 rounded-lg overflow-hidden bg-umber/10 dark:bg-white/5 relative">
-                              {v.thumbnail && (
-                                // eslint-disable-next-line @next/next/no-img-element
-                                <img
-                                  src={v.thumbnail}
-                                  alt=""
-                                  className="w-full h-full object-cover"
-                                  onError={(e) => (e.currentTarget.style.display = "none")}
-                                />
-                              )}
-                              <span className="absolute inset-0 flex items-center justify-center bg-slate/20">
-                                <span className="w-6 h-6 rounded-full bg-coral/90 flex items-center justify-center text-[10px] text-slate">
-                                  ▶
+                      <div className="mt-3 pt-2 border-t border-umber/10 dark:border-white/10">
+                        <p className="text-[10px] font-semibold tracking-wider uppercase text-umber/70 dark:text-oatmeal/60 mb-1.5 flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse"></span>
+                          TV News Broadcasts
+                        </p>
+                        <div className="flex gap-2 overflow-x-auto no-scrollbar -mx-1 px-1">
+                          {m.videos.slice(0, 8).map((v) => (
+                            <a
+                              key={v.id}
+                              href={v.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="shrink-0 w-32 group"
+                            >
+                              <div className="w-32 h-18 rounded-lg overflow-hidden bg-umber/10 dark:bg-white/5 relative">
+                                {v.thumbnail && (
+                                  // eslint-disable-next-line @next/next/no-img-element
+                                  <img
+                                    src={v.thumbnail}
+                                    alt=""
+                                    className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                                    onError={(e) => (e.currentTarget.style.display = "none")}
+                                  />
+                                )}
+                                <span className="absolute inset-0 flex items-center justify-center bg-black/30">
+                                  <span className="w-6 h-6 rounded-full bg-red-600/90 text-white flex items-center justify-center text-[10px]">
+                                    ▶
+                                  </span>
                                 </span>
-                              </span>
-                            </div>
-                            <p className="text-[10px] text-umber dark:text-oatmeal/50 leading-tight mt-1 line-clamp-2">
-                              {v.title}
-                            </p>
-                          </a>
-                        ))}
+                                {v.channel && (
+                                  <span className="absolute bottom-1 left-1 bg-black/80 text-white text-[9px] px-1.5 py-0.5 rounded font-medium truncate max-w-[90%]">
+                                    {v.channel}
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-[10px] text-umber dark:text-oatmeal/70 leading-tight mt-1 line-clamp-2">
+                                {v.title}
+                              </p>
+                            </a>
+                          ))}
+                        </div>
                       </div>
                     )}
                   </div>
