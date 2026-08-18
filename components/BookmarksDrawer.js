@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { X, BookmarkX } from "lucide-react";
 import { timeAgo } from "@/lib/categories";
 import { proxiedImage } from "@/lib/imageProxy";
+import { getEditorialFallback } from "@/lib/newsImages";
 
 export default function BookmarksDrawer({
   isOpen,
@@ -52,45 +53,50 @@ export default function BookmarksDrawer({
               </div>
             ) : (
               <ul className="divide-y divide-umber/10 dark:divide-white/10">
-                {bookmarks.map((article) => (
-                  <li
-                    key={article.id}
-                    className="p-4 flex gap-3 hover:bg-white/40 dark:hover:bg-white/5 cursor-pointer"
-                    onClick={() => onOpenArticle(article)}
-                  >
-                    <div className="w-16 h-16 shrink-0 rounded-lg overflow-hidden bg-umber/10 dark:bg-white/5">
-                      {article.image && (
-                        // eslint-disable-next-line @next/next/no-img-element
+                {bookmarks.map((article, idx) => {
+                  const fallback = getEditorialFallback(article.title, article.category, idx);
+                  const displayImg = article.image ? proxiedImage(article.image) : fallback;
+
+                  return (
+                    <li
+                      key={article.id}
+                      className="p-4 flex gap-3 hover:bg-white/40 dark:hover:bg-white/5 cursor-pointer"
+                      onClick={() => onOpenArticle(article)}
+                    >
+                      <div className="w-16 h-16 shrink-0 rounded-lg overflow-hidden bg-slate/80 dark:bg-black/30">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
-                          src={proxiedImage(article.image)}
+                          src={displayImg}
                           alt=""
                           className="w-full h-full object-cover"
-                          onError={(e) =>
-                            (e.currentTarget.style.display = "none")
-                          }
+                          onError={(e) => {
+                            if (e.currentTarget.src !== fallback) {
+                              e.currentTarget.src = fallback;
+                            }
+                          }}
                         />
-                      )}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-[11px] font-bold uppercase tracking-wider text-umber dark:text-oatmeal/50 mb-0.5">
-                        {article.source} · {timeAgo(article.publishedAt)}
-                      </p>
-                      <p className="text-sm font-medium text-slate dark:text-oatmeal leading-snug line-clamp-2">
-                        {article.title}
-                      </p>
-                    </div>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onToggleBookmark(article);
-                      }}
-                      aria-label="Remove from reading list"
-                      className="shrink-0 self-start text-umber dark:text-oatmeal/50 hover:text-coral transition-colors"
-                    >
-                      <BookmarkX size={18} />
-                    </button>
-                  </li>
-                ))}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-[11px] font-bold uppercase tracking-wider text-umber dark:text-oatmeal/50 mb-0.5">
+                          {article.source} · {timeAgo(article.publishedAt)}
+                        </p>
+                        <p className="text-sm font-medium text-slate dark:text-oatmeal leading-snug line-clamp-2">
+                          {article.title}
+                        </p>
+                      </div>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onToggleBookmark(article);
+                        }}
+                        aria-label="Remove from reading list"
+                        className="shrink-0 self-start text-umber dark:text-oatmeal/50 hover:text-coral transition-colors"
+                      >
+                        <BookmarkX size={18} />
+                      </button>
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </motion.aside>

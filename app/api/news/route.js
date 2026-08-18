@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { sanitizeQuery } from "@/lib/searchUtils";
 import { countryMeta } from "@/lib/countries";
+import { getEditorialFallback } from "@/lib/newsImages";
 
 // This route runs on the server only, so the NEWS_API_KEY (and, if set,
 // ANTHROPIC_API_KEY) never reach the browser. All client components call
@@ -376,10 +377,11 @@ export async function GET(request) {
         description: a.description,
         content: a.content,
         url: a.url,
-        image: a.urlToImage,
+        image: a.urlToImage || getEditorialFallback(a.title, category, i),
         source: a.source?.name || "Unknown source",
         author: a.author,
         publishedAt: a.publishedAt,
+        category,
       }));
 
     articles = await curateArticles(articles, { category, country, isSearch });

@@ -5,10 +5,8 @@ import { motion } from "framer-motion";
 import { Bookmark, BookmarkCheck } from "lucide-react";
 import { timeAgo } from "@/lib/categories";
 import { proxiedImage } from "@/lib/imageProxy";
+import { getEditorialFallback } from "@/lib/newsImages";
 
-// Tailwind's JIT scanner only picks up class names it can see as literal
-// strings, so dynamic template strings like `bg-${accent}` get purged from
-// the production build. Keep the full class names spelled out here instead.
 const ACCENTS = [
   { bg: "bg-coral", dot: "bg-coral" },
   { bg: "bg-sea", dot: "bg-sea" },
@@ -25,8 +23,10 @@ export default function ArticleCard({
 }) {
   const [imgFailed, setImgFailed] = useState(false);
   const accent = ACCENTS[index % ACCENTS.length];
-  const accentBg = accent.bg;
   const accentDot = accent.dot;
+  const fallbackPhoto = getEditorialFallback(article.title, article.category, index);
+
+  const displayImage = !imgFailed && article.image ? proxiedImage(article.image) : fallbackPhoto;
 
   return (
     <motion.article
@@ -41,33 +41,26 @@ export default function ArticleCard({
       onClick={() => onOpen(article)}
     >
       <div
-        className={`relative overflow-hidden bg-umber/10 dark:bg-white/5 ${
-          featured ? "h-64 md:h-96" : "h-40"
+        className={`relative overflow-hidden bg-slate/90 dark:bg-black/40 ${
+          featured ? "h-64 md:h-96" : "h-44"
         }`}
       >
-        {article.image && !imgFailed ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={proxiedImage(article.image)}
-            alt=""
-            onError={() => setImgFailed(true)}
-            className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
-          />
-        ) : (
-          <div
-            className={`relative w-full h-full flex items-center justify-center overflow-hidden ${accentBg}`}
-          >
-            <span
-              aria-hidden
-              className="absolute -right-4 -bottom-6 font-display italic font-bold text-slate/10 text-[5rem] leading-none select-none"
-            >
-              {article.source?.charAt(0) || "P"}
-            </span>
-            <span className="relative font-display italic text-slate/60 text-lg px-6 text-center text-balance">
-              {article.source}
-            </span>
-          </div>
-        )}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={displayImage}
+          alt={article.title || ""}
+          onError={() => setImgFailed(true)}
+          className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+        />
+
+        {/* Gradient shadow for text & bookmark readability */}
+        <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-black/20 pointer-events-none" />
+
+        {/* Source overlay tag */}
+        <div className="absolute bottom-2.5 left-3 z-10 flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur-md border border-white/15 text-[10px] font-semibold text-white uppercase tracking-wider">
+          <span className={`w-1.5 h-1.5 rounded-full ${accentDot}`} />
+          <span className="truncate max-w-[140px]">{article.source}</span>
+        </div>
 
         <motion.button
           whileTap={{ scale: 0.85 }}
@@ -76,7 +69,7 @@ export default function ArticleCard({
             onToggleBookmark(article);
           }}
           aria-label={isBookmarked ? "Remove from reading list" : "Save to reading list"}
-          className="absolute top-3 right-3 bg-oatmeal/90 dark:bg-slate/90 backdrop-blur rounded-full p-2 hover:bg-oatmeal dark:hover:bg-slate transition-colors"
+          className="absolute top-3 right-3 z-10 bg-black/50 hover:bg-black/70 backdrop-blur-md border border-white/20 rounded-full p-2 text-white transition-colors"
         >
           <motion.span
             key={isBookmarked ? "on" : "off"}
@@ -86,9 +79,9 @@ export default function ArticleCard({
             className="flex"
           >
             {isBookmarked ? (
-              <BookmarkCheck size={16} className="text-slate dark:text-oatmeal" />
+              <BookmarkCheck size={16} className="text-emerald-400" />
             ) : (
-              <Bookmark size={16} className="text-slate dark:text-oatmeal" />
+              <Bookmark size={16} className="text-white" />
             )}
           </motion.span>
         </motion.button>
@@ -96,13 +89,8 @@ export default function ArticleCard({
 
       <div className="flex flex-col flex-1 p-4 gap-2">
         <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider text-umber dark:text-oatmeal/50">
-          <span
-            className={`w-1.5 h-1.5 rounded-full ${accentDot}`}
-            aria-hidden
-          />
-          {article.source}
-          <span className="text-umber/50 dark:text-oatmeal/30 font-normal normal-case">
-            · {timeAgo(article.publishedAt)}
+          <span className="text-umber/70 dark:text-oatmeal/50 font-medium">
+            {timeAgo(article.publishedAt)}
           </span>
         </div>
         <h3

@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { X, ExternalLink, Bookmark, BookmarkCheck } from "lucide-react";
 import { timeAgo } from "@/lib/categories";
 import { proxiedImage } from "@/lib/imageProxy";
+import { getEditorialFallback } from "@/lib/newsImages";
 
 export default function ArticleModal({
   article,
@@ -11,6 +12,9 @@ export default function ArticleModal({
   isBookmarked,
   onToggleBookmark,
 }) {
+  const fallbackPhoto = article ? getEditorialFallback(article.title, article.category) : null;
+  const displayImage = article?.image ? proxiedImage(article.image) : fallbackPhoto;
+
   return (
     <AnimatePresence>
       {article && (
@@ -31,17 +35,20 @@ export default function ArticleModal({
             onClick={(e) => e.stopPropagation()}
             className="relative bg-oatmeal dark:bg-slate w-full md:max-w-2xl md:rounded-2xl max-h-[90vh] overflow-y-auto rounded-t-2xl"
           >
-            {article.image && (
-              <div className="h-56 md:h-72 bg-umber/10 dark:bg-white/5">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={proxiedImage(article.image)}
-                  alt=""
-                  className="w-full h-full object-cover"
-                  onError={(e) => (e.currentTarget.style.display = "none")}
-                />
-              </div>
-            )}
+            <div className="h-56 md:h-72 bg-slate/90 dark:bg-black/40 overflow-hidden relative">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={displayImage}
+                alt={article.title || ""}
+                className="w-full h-full object-cover"
+                onError={(e) => {
+                  if (e.currentTarget.src !== fallbackPhoto) {
+                    e.currentTarget.src = fallbackPhoto;
+                  }
+                }}
+              />
+              <div className="absolute inset-0 bg-gradient-to-t from-black/50 via-transparent to-transparent pointer-events-none" />
+            </div>
 
             <div className="p-6 md:p-8">
               <div className="flex items-start justify-between gap-4 mb-4">
