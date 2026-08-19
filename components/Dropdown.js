@@ -4,15 +4,6 @@ import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { ChevronDown, Check } from "lucide-react";
 
-/**
- * Custom animated dropdown. Replaces native <select> so we can actually
- * style and animate the open panel — a browser's native option list can't
- * be themed or given motion.
- *
- * items: [{ value, label, icon?: Component, meta?: string, divider?: true }]
- * `divider: true` on an item draws a separator line above it (used to set
- * "Reading list" apart from the real categories).
- */
 export default function Dropdown({
   icon: TriggerIcon,
   value,
@@ -51,20 +42,20 @@ export default function Dropdown({
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-label={label}
-        className={`flex shrink-0 items-center gap-1.5 bg-white dark:bg-white/5 border rounded-full pl-3.5 pr-2.5 py-2 text-sm font-medium text-slate dark:text-oatmeal transition-all ${
+        className={`flex shrink-0 items-center gap-1.5 bg-slate-50 dark:bg-white/[0.06] border rounded-full pl-3.5 pr-2.5 py-2 text-sm font-medium text-slate-800 dark:text-slate-100 transition-all ${
           open
-            ? "border-slate dark:border-oatmeal/40 shadow-md"
-            : "border-umber/20 dark:border-white/10 shadow-sm hover:border-umber/40 dark:hover:border-white/25"
+            ? "border-indigo-500 dark:border-indigo-400 shadow-md ring-2 ring-indigo-500/20"
+            : "border-slate-200 dark:border-white/10 shadow-sm hover:border-slate-300 dark:hover:border-white/25"
         }`}
       >
-        {TriggerIcon && <TriggerIcon size={14} className="text-umber dark:text-oatmeal/50 shrink-0" />}
-        <span className="max-w-[6.5rem] sm:max-w-none truncate">
+        {TriggerIcon && <TriggerIcon size={14} className="text-slate-400 dark:text-slate-500 shrink-0" />}
+        <span className="max-w-[6.5rem] sm:max-w-none truncate font-medium">
           {activeItem?.label ?? "Select"}
         </span>
         <ChevronDown
           size={14}
-          className={`text-umber dark:text-oatmeal/50 shrink-0 transition-transform duration-200 ${
-            open ? "rotate-180" : ""
+          className={`text-slate-400 dark:text-slate-500 shrink-0 transition-transform duration-200 ${
+            open ? "rotate-180 text-indigo-500 dark:text-indigo-400" : ""
           }`}
         />
       </button>
@@ -77,7 +68,7 @@ export default function Dropdown({
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -6, scale: 0.97 }}
             transition={{ duration: 0.15, ease: "easeOut" }}
-            className={`absolute z-50 mt-2 w-52 py-1.5 bg-white dark:bg-[#332f47] rounded-2xl border border-umber/15 dark:border-white/10 shadow-xl dark:shadow-black/40 origin-top overflow-hidden ${
+            className={`absolute z-50 mt-2 w-52 py-1.5 bg-white dark:bg-[#111827] rounded-2xl border border-slate-200/90 dark:border-white/10 shadow-xl dark:shadow-[0_10px_30px_rgba(0,0,0,0.5)] origin-top overflow-hidden ${
               align === "right" ? "right-0" : "left-0"
             }`}
           >
@@ -87,7 +78,7 @@ export default function Dropdown({
               return (
                 <li key={item.value}>
                   {item.divider && (
-                    <div className="my-1.5 mx-3 border-t border-umber/10 dark:border-white/10" />
+                    <div className="my-1.5 mx-3 border-t border-slate-100 dark:border-white/10" />
                   )}
                   <button
                     type="button"
@@ -99,18 +90,18 @@ export default function Dropdown({
                     }}
                     className={`w-full flex items-center justify-between gap-2 px-4 py-2.5 text-sm text-left transition-colors ${
                       isActive
-                        ? "bg-sea/15 dark:bg-sea/10 text-slate dark:text-oatmeal font-semibold"
-                        : "text-slate/80 dark:text-oatmeal/75 hover:bg-oatmeal dark:hover:bg-white/5"
+                        ? "bg-indigo-50 dark:bg-indigo-500/15 text-indigo-600 dark:text-indigo-400 font-semibold"
+                        : "text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-white/[0.06]"
                     }`}
                   >
                     <span className="flex items-center gap-2">
-                      {ItemIcon && <ItemIcon size={14} className="text-umber dark:text-oatmeal/50 shrink-0" />}
+                      {ItemIcon && <ItemIcon size={14} className="text-slate-400 dark:text-slate-500 shrink-0" />}
                       {item.label}
                       {item.meta && (
-                        <span className="text-coral text-xs font-bold">{item.meta}</span>
+                        <span className="text-rose-500 text-xs font-bold bg-rose-50 dark:bg-rose-500/10 px-1.5 py-0.5 rounded-full">{item.meta}</span>
                       )}
                     </span>
-                    {isActive && <Check size={14} className="text-sea shrink-0" />}
+                    {isActive && <Check size={14} className="text-indigo-600 dark:text-indigo-400 shrink-0" />}
                   </button>
                 </li>
               );
@@ -121,3 +112,4 @@ export default function Dropdown({
     </div>
   );
 }
+

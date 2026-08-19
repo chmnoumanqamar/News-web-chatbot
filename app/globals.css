@@ -8,39 +8,42 @@
 
 /* thin custom scrollbar */
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-track {
-  background: #ebe9e4;
+  background: #f1f5f9;
 }
 ::-webkit-scrollbar-thumb {
-  background: #786767;
+  background: #cbd5e1;
   border-radius: 999px;
 }
 .dark ::-webkit-scrollbar-track {
-  background: #282539;
+  background: #0b0f17;
 }
 .dark ::-webkit-scrollbar-thumb {
-  background: #EBE9E4;
-  opacity: 0.3;
+  background: #1e293b;
+  border-radius: 999px;
+}
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: #334155;
 }
 
 .shimmer {
   background: linear-gradient(
     90deg,
-    #e4e2db 0%,
-    #f4f3ee 20%,
-    #e4e2db 40%
+    #f1f5f9 0%,
+    #e2e8f0 20%,
+    #f1f5f9 40%
   );
   background-size: 800px 100%;
 }
 .dark .shimmer {
   background: linear-gradient(
     90deg,
-    #332f47 0%,
-    #423d5c 20%,
-    #332f47 40%
+    #131b2a 0%,
+    #1e293b 20%,
+    #131b2a 40%
   );
   background-size: 800px 100%;
 }
@@ -61,13 +64,13 @@
 a:focus-visible,
 button:focus-visible,
 input:focus-visible {
-  outline: 2px solid #282539;
+  outline: 2px solid #0f172a;
   outline-offset: 2px;
 }
 .dark a:focus-visible,
 .dark button:focus-visible,
 .dark input:focus-visible {
-  outline: 2px solid #ebe9e4;
+  outline: 2px solid #38bdf8;
   outline-offset: 2px;
 }
 
@@ -81,3 +84,4 @@ input:focus-visible {
     scroll-behavior: auto !important;
   }
 }
+

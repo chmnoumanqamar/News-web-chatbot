@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { AnimatePresence } from "framer-motion";
 import ArticleCard from "./ArticleCard";
 import SkeletonCard from "./SkeletonCard";
 
@@ -50,14 +49,14 @@ export default function ArticleGrid({
 
   if (status === "error") {
     return (
-      <div className="text-center py-24 border border-dashed border-umber/30 dark:border-white/20 rounded-2xl">
-        <p className="font-display italic text-xl text-slate dark:text-oatmeal mb-2">
+      <div className="text-center py-20 border border-dashed border-slate-300 dark:border-white/20 rounded-2xl bg-white/40 dark:bg-white/[0.02]">
+        <p className="font-display italic text-xl text-slate-900 dark:text-white mb-2">
           The feed dropped.
         </p>
-        <p className="text-sm text-umber dark:text-oatmeal/60 mb-5">{error}</p>
+        <p className="text-sm text-slate-500 dark:text-slate-400 mb-5">{error}</p>
         <button
           onClick={onRetry}
-          className="bg-slate dark:bg-oatmeal text-oatmeal dark:text-slate px-5 py-2 rounded-full text-sm font-medium hover:bg-umber dark:hover:bg-oatmeal/80 transition-colors"
+          className="bg-slate-900 dark:bg-white text-white dark:text-slate-900 px-5 py-2 rounded-full text-sm font-medium hover:bg-slate-800 dark:hover:bg-slate-100 transition-colors shadow-sm"
         >
           Try again
         </button>
@@ -67,13 +66,13 @@ export default function ArticleGrid({
 
   if (!articles || articles.length === 0) {
     return (
-      <div className="text-center py-24 border border-dashed border-umber/30 dark:border-white/20 rounded-2xl">
-        <p className="font-display italic text-xl text-slate dark:text-oatmeal mb-2">
+      <div className="text-center py-20 border border-dashed border-slate-300 dark:border-white/20 rounded-2xl bg-white/40 dark:bg-white/[0.02]">
+        <p className="font-display italic text-xl text-slate-900 dark:text-white mb-2">
           Nothing here yet.
         </p>
-        <p className="text-sm text-umber dark:text-oatmeal/60">
+        <p className="text-sm text-slate-500 dark:text-slate-400">
           Search works best with a few plain keywords — try{" "}
-          <span className="text-slate dark:text-oatmeal font-medium">"Pakistan floods"</span>{" "}
+          <span className="text-slate-900 dark:text-white font-medium">"Pakistan floods"</span>{" "}
           instead of a full sentence, or pick a category above.
         </p>
       </div>
@@ -106,23 +105,24 @@ export default function ArticleGrid({
         ))}
       </div>
 
-      {/* Invisible trigger for infinite scroll, sitting just above the very bottom */}
+      {/* Invisible trigger for infinite scroll */}
       {hasMore && <div ref={sentinelRef} className="h-4 w-full my-2" aria-hidden />}
 
       {status === "loadingMore" && (
         <div className="flex justify-center py-8">
-          <div className="flex items-center gap-2 text-sm text-umber dark:text-oatmeal/60">
-            <span className="w-4 h-4 border-2 border-umber/30 dark:border-oatmeal/30 border-t-umber dark:border-t-oatmeal rounded-full animate-spin" />
+          <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
+            <span className="w-4 h-4 border-2 border-indigo-500/30 border-t-indigo-500 rounded-full animate-spin" />
             More stories loading…
           </div>
         </div>
       )}
 
       {!hasMore && status !== "loadingMore" && articles.length > 0 && (
-        <p className="text-center text-xs text-umber/50 dark:text-oatmeal/30 py-8">
+        <p className="text-center text-xs text-slate-400 dark:text-slate-500 py-8">
           You're all caught up for now.
         </p>
       )}
     </>
   );
 }
+

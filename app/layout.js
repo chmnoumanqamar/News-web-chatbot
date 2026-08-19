@@ -1,9 +1,5 @@
 import "./globals.css";
 
-// Using a system font stack instead of next/font/google — this removes the
-// build/dev-time dependency on fonts.googleapis.com entirely, so the app
-// works even on networks that block or throttle Google Fonts.
-
 export const metadata = {
   title: "Pulse — News, as it happens",
   description:
@@ -23,9 +19,10 @@ export default function RootLayout({ children }) {
           }}
         />
       </head>
-      <body className="font-body antialiased bg-oatmeal dark:bg-slate text-slate dark:text-oatmeal transition-colors duration-300">
+      <body className="font-body antialiased bg-slate-50 dark:bg-[#0B0F17] text-slate-900 dark:text-slate-100 min-h-screen selection:bg-indigo-500 selection:text-white transition-colors duration-300">
         {children}
       </body>
     </html>
   );
 }
+
