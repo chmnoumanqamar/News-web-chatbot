@@ -1,14 +1,15 @@
 import { NextResponse } from "next/server";
 import { sanitizeQuery } from "@/lib/searchUtils";
-import { parseTimeWindow, extractTimeSlot } from "@/lib/timeParse";
+import { parseTimeWindow, extractTimeSlot, extractDateInfo } from "@/lib/timeParse";
 import { countryMeta } from "@/lib/countries";
 
 // The chatbot widget and AI Results panel call this route. It:
 //  1. Detects language (Roman Urdu, Urdu script, English, etc.) and responds in that SAME language
-//  2. Extracts exact requested bulletin times (e.g. "9 PM", "subah 9 baje", "10 PM", "8 AM")
-//  3. Queries MULTIPLE leading TV news channels in parallel (ARY News, Geo News, Dunya News, Hum News, Samaa TV, etc.)
-//  4. Interleaves results so every channel is fairly represented
-//  5. Generates a mature, accurate briefing via Gemini 3.6 Flash
+//  2. Extracts exact requested bulletin times (e.g. "9 PM", "1 PM", "subah 9 baje")
+//  3. Extracts exact requested dates (e.g. "yesterday", "kal", "18-8-2026", "18 August")
+//  4. Queries MULTIPLE leading TV news channels in parallel (ARY News, Geo News, Dunya News, Hum News, Samaa TV, etc.)
+//  5. Filters and ranks videos strictly by requested date and time slot so yesterday's query never gives today's news
+//  6. Generates a mature, accurate briefing via Gemini
 
 const NEWS_BASE_URL = "https://newsapi.org/v2/everything";
 const TOP_HEADLINES_URL = "https://newsapi.org/v2/top-headlines";
@@ -79,7 +80,7 @@ function detectLanguage(text) {
 
   const romanUrduWords = new Set([
     "subah", "subha", "shaam", "sham", "raat", "dopeher", "dopahar", "baje",
-    "bajhay", "bajy", "bje", "bjay", "aaj", "kal", "parson", "taza", "khabar",
+    "bajhay", "bajy", "bje", "bjay", "aaj", "kal", "parson", "parso", "taza", "khabar",
     "khabrain", "batao", "bataen", "bataiye", "kya", "kia", "kaise", "kese",
     "hai", "hain", "mein", "main", "ki", "ka", "ke", "ko", "ye", "yeh", "wo",
     "woh", "mujhe", "humko", "humein", "bhi", "karo", "karen", "chal", "rehi",
@@ -188,10 +189,18 @@ function makeController(ms) {
 
 // ─── Multi-Channel Parallel YouTube Video Fetcher ─────────────────────────────
 
-async function fetchChannelVideos(channelName, timeSlot, query, regionCode, apiKey) {
+async function fetchChannelVideos(channelName, timeSlot, query, dateInfo, regionCode, apiKey) {
   let q;
-  if (timeSlot) {
+  const dateStr = dateInfo ? `${dateInfo.day} ${dateInfo.monthShort} ${dateInfo.year || ""}`.trim() : "";
+
+  if (timeSlot && dateInfo) {
+    q = `${channelName} ${timeSlot.slot} ${dateStr} headlines`;
+  } else if (timeSlot) {
     q = `${channelName} ${timeSlot.slot} headlines`;
+  } else if (dateInfo && query) {
+    q = `${channelName} ${query} ${dateStr}`;
+  } else if (dateInfo) {
+    q = `${channelName} ${dateStr} headlines`;
   } else if (query) {
     q = `${channelName} ${query} news`;
   } else {
@@ -203,12 +212,19 @@ async function fetchChannelVideos(channelName, timeSlot, query, regionCode, apiK
     q,
     type: "video",
     order: "date",
-    maxResults: "3",
+    maxResults: "5",
     videoCategoryId: "25", // Category 25 = News & Politics ONLY
     regionCode: regionCode || "PK",
     relevanceLanguage: "en",
     key: apiKey,
   });
+
+  if (dateInfo?.publishedAfter) {
+    params.set("publishedAfter", dateInfo.publishedAfter);
+  }
+  if (dateInfo?.publishedBefore) {
+    params.set("publishedBefore", dateInfo.publishedBefore);
+  }
 
   const { controller, timeout } = makeController(FETCH_TIMEOUT_MS);
   try {
@@ -220,22 +236,44 @@ async function fetchChannelVideos(channelName, timeSlot, query, regionCode, apiK
     if (!res.ok) return [];
 
     const data = await res.json();
-    return parseYtItems(data.items || []);
+    const items = parseYtItems(data.items || []);
+
+    // If date-restricted returned 0 items, fallback to searching with date keyword in query
+    if (items.length === 0 && dateInfo?.publishedAfter) {
+      params.delete("publishedAfter");
+      params.delete("publishedBefore");
+      const { controller: c2, timeout: t2 } = makeController(FETCH_TIMEOUT_MS);
+      try {
+        const res2 = await fetch(`${YOUTUBE_SEARCH_URL}?${params.toString()}`, {
+          cache: "no-store",
+          signal: c2.signal,
+        });
+        clearTimeout(t2);
+        if (res2.ok) {
+          const data2 = await res2.json();
+          return parseYtItems(data2.items || []);
+        }
+      } catch {
+        clearTimeout(t2);
+      }
+    }
+
+    return items;
   } catch {
     clearTimeout(timeout);
     return [];
   }
 }
 
-async function fetchBroadcastVideos({ query, profile, timeSlot }) {
+async function fetchBroadcastVideos({ query, profile, timeSlot, dateInfo }) {
   const apiKey = process.env.YOUTUBE_API_KEY;
   if (!apiKey) return [];
 
   const channels = profile.channelsList || ["ARY News", "Geo News", "Dunya News", "HUM News", "Samaa TV"];
 
-  // Fetch top 3-4 channels in parallel to ensure diversity across all networks
+  // Fetch channels in parallel to ensure diversity across all networks
   const channelResults = await Promise.all(
-    channels.map((ch) => fetchChannelVideos(ch, timeSlot, query, profile.regionCode, apiKey))
+    channels.map((ch) => fetchChannelVideos(ch, timeSlot, query, dateInfo, profile.regionCode, apiKey))
   );
 
   // Interleave results so every TV channel is represented in the list
@@ -244,8 +282,7 @@ async function fetchBroadcastVideos({ query, profile, timeSlot }) {
 
   for (let i = 0; i < maxLen; i++) {
     for (const list of channelResults) {
-      if (list[i] && merged.length < 12) {
-        // Prevent duplicate video IDs
+      if (list[i] && merged.length < 16) {
         if (!merged.some((m) => m.id === list[i].id)) {
           merged.push(list[i]);
         }
@@ -253,21 +290,61 @@ async function fetchBroadcastVideos({ query, profile, timeSlot }) {
     }
   }
 
-  // If a specific timeSlot was requested, sort exact hour matches to the top
-  if (timeSlot && merged.length > 0) {
-    const timeRegex = new RegExp(
-      `\\b(?:${timeSlot.hour}\\s*(?:pm|am|baje|bajhay)|${timeSlot.slotAlt}|${timeSlot.hour}:00)\\b`,
-      "i"
-    );
-    const exactMatches = merged.filter((v) => timeRegex.test(v.title));
-    const otherMatches = merged.filter((v) => !timeRegex.test(v.title));
+  if (merged.length === 0) return [];
 
-    if (exactMatches.length > 0) {
-      return [...exactMatches, ...otherMatches].slice(0, 10);
+  // Score videos: heavily reward exact date & exact time matches; penalize conflicting dates
+  const scoreVideo = (v) => {
+    let score = 0;
+    const title = (v.title || "").toLowerCase();
+    const pubDate = v.publishedAt || "";
+
+    if (dateInfo) {
+      const day = String(dateInfo.day);
+      const mShort = (dateInfo.monthShort || "").toLowerCase();
+      const mFull = (dateInfo.monthName || "").toLowerCase();
+      const mNum = String(dateInfo.month + 1);
+      const mNumPad = mNum.padStart(2, "0");
+
+      // Check if title or pubDate matches the requested date
+      const dateInTitle = new RegExp(
+        `\\b(?:${day}(?:st|nd|rd|th)?\\s*(?:${mShort}|${mFull})|(?:${mShort}|${mFull})\\s*${day}(?:st|nd|rd|th)?|${day}[-/.]0?${mNum}|${day}[-/.]${mNumPad})\\b`,
+        "i"
+      ).test(title);
+
+      const dateInPub = pubDate.startsWith(`${dateInfo.year}-${mNumPad}-${day.padStart(2, "0")}`);
+
+      if (dateInTitle || dateInPub) {
+        score += 50;
+      }
+
+      // Check if title explicitly mentions a DIFFERENT day of the same month (e.g. 19 Aug when 18 Aug is requested)
+      const wrongDayInTitle = new RegExp(
+        `\\b(?!${day}\\b)\\d{1,2}(?:st|nd|rd|th)?\\s*(?:${mShort}|${mFull})\\b`,
+        "i"
+      ).test(title);
+
+      if (wrongDayInTitle) {
+        score -= 40;
+      }
     }
-  }
 
-  return merged.slice(0, 10);
+    if (timeSlot) {
+      const timeRegex = new RegExp(
+        `\\b(?:${timeSlot.hour}\\s*(?:pm|am|baje|bajhay)|${timeSlot.slotAlt}|${timeSlot.hour}:00)\\b`,
+        "i"
+      );
+      if (timeRegex.test(title)) {
+        score += 30;
+      }
+    }
+
+    return score;
+  };
+
+  const ranked = [...merged].sort((a, b) => scoreVideo(b) - scoreVideo(a));
+  const validRanked = dateInfo ? ranked.filter((v) => scoreVideo(v) >= 0) : ranked;
+
+  return (validRanked.length > 0 ? validRanked : ranked).slice(0, 10);
 }
 
 function parseYtItems(items) {
@@ -285,7 +362,7 @@ function parseYtItems(items) {
 
 // ─── Fetch Articles for Grounding ─────────────────────────────────────────────
 
-async function fetchGroundingArticles({ query, profile, from }) {
+async function fetchGroundingArticles({ query, profile, from, to }) {
   const apiKey = process.env.NEWS_API_KEY;
   if (!apiKey) return [];
 
@@ -293,6 +370,7 @@ async function fetchGroundingArticles({ query, profile, from }) {
   params.set("q", query || profile.newsKeyword);
   if (profile.domains) params.set("domains", profile.domains);
   if (from) params.set("from", from);
+  if (to) params.set("to", to);
   params.set("language", "en");
   params.set("sortBy", "publishedAt");
   params.set("pageSize", "8");
@@ -328,10 +406,10 @@ async function fetchGroundingArticles({ query, profile, from }) {
 
 // ─── Gemini LLM News Briefing (Multi-Language Responsive) ─────────────────────
 
-async function askGemini({ question, profile, articles, videos, timeSlot, lang }) {
+async function askGemini({ question, profile, articles, videos, timeSlot, dateInfo, lang }) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    return composeFallbackSummary(profile, videos, articles, timeSlot, lang);
+    return composeFallbackSummary(profile, videos, articles, timeSlot, dateInfo, lang);
   }
 
   const broadcastList = videos.length
@@ -351,9 +429,14 @@ async function askGemini({ question, profile, articles, videos, timeSlot, lang }
     langInstruction = "LANGUAGE RULE: Reply in articulate, professional English.";
   }
 
+  let dateGuidance = "";
+  if (dateInfo) {
+    dateGuidance = `MANDATORY DATE RESTRICTION: The user explicitly requested news for DATE: ${dateInfo.formattedFull} (${dateInfo.isYesterday ? "YESTERDAY" : "SPECIFIC DATE"}). You MUST strictly summarize headlines and events reported on ${dateInfo.formattedFull}. Do NOT report today's or any other date's news! Base your briefing on the broadcast reports matching this requested date.`;
+  }
+
   const timeGuidance = timeSlot
     ? `The user explicitly requested the ${timeSlot.slot} news bulletin. Focus strictly on what was reported in the ${timeSlot.slot} broadcast across these TV channels (${profile.channelNames}). Highlight stories from multiple channels (ARY News, Geo News, Dunya News, Hum News, Samaa TV).`
-    : `Focus on what is actively being broadcast on leading TV channels in ${profile.name} (${profile.channelNames}) right now. Highlight developments across different channels.`;
+    : `Focus on what was broadcast on leading TV channels in ${profile.name} (${profile.channelNames}). Highlight developments across different channels.`;
 
   const prompt = `You are "Pulse Assistant" — a senior TV news correspondent and analyst for Pulse News.
 
@@ -361,6 +444,8 @@ TASK:
 Provide a mature, authoritative, and accurate news briefing in direct response to the user's question.
 
 ${langInstruction}
+
+${dateGuidance}
 
 TIME ACCURACY & MULTI-CHANNEL FOCUS:
 ${timeGuidance}
@@ -400,7 +485,7 @@ Deliver your accurate news briefing now:`;
 
       if (!res.ok) {
         if (res.status === 401) {
-          return composeFallbackSummary(profile, videos, articles, timeSlot, lang);
+          return composeFallbackSummary(profile, videos, articles, timeSlot, dateInfo, lang);
         }
         continue;
       }
@@ -416,37 +501,39 @@ Deliver your accurate news briefing now:`;
     }
   }
 
-  return composeFallbackSummary(profile, videos, articles, timeSlot, lang);
+  return composeFallbackSummary(profile, videos, articles, timeSlot, dateInfo, lang);
 }
 
 // ─── Multi-Language Fallback Synthesis ────────────────────────────────────────
 
-function composeFallbackSummary(profile, videos, articles, timeSlot, lang) {
+function composeFallbackSummary(profile, videos, articles, timeSlot, dateInfo, lang) {
+  const dateLabel = dateInfo ? `${dateInfo.formattedFull} ` : "";
   const timeLabel = timeSlot ? `${timeSlot.slot} ` : "";
+  const dateTimeLabel = `${dateLabel}${timeLabel}`.trim();
 
   if (lang === "roman_urdu") {
     if (videos.length > 0) {
       const topClips = videos.slice(0, 3).map((v) => `"${v.title}" (${v.channel})`).join(", ");
-      return `${profile.name} ke leading TV channels (${profile.channelNames}) ke ${timeLabel}bulletin ke mutabiq ahem khabrain yeh hain: ${topClips}. Mukammal video reports aap neechay daikh sakte hain.`;
+      return `${profile.name} ke leading TV channels (${profile.channelNames}) ke ${dateTimeLabel ? `${dateTimeLabel} ` : ""}bulletin ke mutabiq ahem khabrain yeh hain: ${topClips}. Mukammal video reports aap neechay daikh sakte hain.`;
     }
-    return `${profile.name} ke leading TV channels (${profile.channelNames}) par is waqt ahem mulki aur bain-ul-aqwami khabrain nashar ki ja rahi hain. Neechay diye gaye broadcast reports mulahiza karein.`;
+    return `${profile.name} ke leading TV channels (${profile.channelNames}) par ${dateTimeLabel ? `${dateTimeLabel} ` : ""}ahem mulki aur bain-ul-aqwami khabrain nashar ki gayin. Neechay diye gaye broadcast reports mulahiza karein.`;
   }
 
   if (lang === "ur_script") {
     if (videos.length > 0) {
       const topClips = videos.slice(0, 3).map((v) => `"${v.title}" (${v.channel})`).join("، ");
-      return `${profile.name} کے نمایاں ٹی وی چینلز (${profile.channelNames}) کی ${timeLabel}نشریات کی اہم خبریں یہ ہیں: ${topClips}۔ تفصیلی ویڈیو رپورٹس نیچے دیکھی جا سکتی ہیں۔`;
+      return `${profile.name} کے نمایاں ٹی وی چینلز (${profile.channelNames}) کی ${dateTimeLabel ? `${dateTimeLabel} ` : ""}نشریات کی اہم خبریں یہ ہیں: ${topClips}۔ تفصیلی ویڈیو رپورٹس نیچے دیکھی جا سکتی ہیں۔`;
     }
-    return `${profile.name} کے اہم ٹی وی چینلز پر تازہ ترین ملکی اور بین الاقوامی خبریں نشر کی جا رہی ہیں۔ نیچے دی گئی رپورٹس دیکھیں۔`;
+    return `${profile.name} کے اہم ٹی وی چینلز پر ${dateTimeLabel ? `${dateTimeLabel} ` : ""}اہم ملکی اور بین الاقوامی خبریں نشر کی گئیں۔ نیچے دی گئی رپورٹس دیکھیں۔`;
   }
 
   // English fallback
   if (videos.length > 0) {
     const topClips = videos.slice(0, 3).map((v) => `"${v.title}" (${v.channel})`).join(", ");
-    return `Major TV channels in ${profile.name} (${profile.channelNames}) reported the following key developing stories in their ${timeLabel}news broadcast: ${topClips}. You can watch the verified broadcast reports directly below.`;
+    return `Major TV channels in ${profile.name} (${profile.channelNames}) reported the following key developing stories in their ${dateTimeLabel ? `${dateTimeLabel} ` : ""}news broadcast: ${topClips}. You can watch the verified broadcast reports directly below.`;
   }
 
-  return `Live news broadcasts across ${profile.name}'s leading TV networks (${profile.channelNames}) are actively covering major developing stories in national politics, economy, and regional affairs. Explore the verified broadcast reports below.`;
+  return `TV news broadcasts across ${profile.name}'s leading TV networks (${profile.channelNames}) covered key stories for ${dateTimeLabel || "the requested period"}. Explore the verified broadcast reports below.`;
 }
 
 // ─── POST Handler ─────────────────────────────────────────────────────────────
@@ -487,23 +574,27 @@ export async function POST(request) {
   // 4. Extract exact time bulletin if requested (e.g. 9 PM, subah 9 baje, 10 PM)
   const timeSlot = extractTimeSlot(message);
 
-  // 5. Time window and query sanitization
-  const { from, cleanedMessage } = parseTimeWindow(message);
+  // 5. Extract exact date info (e.g. "yesterday", "kal", "18-8-2026", "18 August")
+  const dateInfo = extractDateInfo(message);
+
+  // 6. Time window and query sanitization
+  const { from, to, cleanedMessage } = parseTimeWindow(message);
   const query = sanitizeQuery(cleanedMessage);
 
-  // 6. Fetch verified TV broadcasts across multiple channels in parallel
+  // 7. Fetch verified TV broadcasts across multiple channels in parallel
   const [videos, articles] = await Promise.all([
-    fetchBroadcastVideos({ query, profile, timeSlot }),
-    fetchGroundingArticles({ query, profile, from }),
+    fetchBroadcastVideos({ query, profile, timeSlot, dateInfo }),
+    fetchGroundingArticles({ query, profile, from, to }),
   ]);
 
-  // 7. Generate language-accurate TV broadcast briefing via Gemini 3.6 Flash
+  // 8. Generate language-accurate TV broadcast briefing via Gemini
   const answer = await askGemini({
     question: message,
     profile,
     articles,
     videos,
     timeSlot,
+    dateInfo,
     lang,
   });
 
@@ -513,6 +604,7 @@ export async function POST(request) {
     query: query || message,
     country: profile.name,
     timeSlot: timeSlot?.slot || null,
+    date: dateInfo?.formattedFull || null,
     lang,
   });
 }
